@@ -127,17 +127,21 @@ class RewardManager():
                     break
             self.info_contains_answer_lst.append(found) # ログ用リストに追加
 
-
+            
+            # 【重要】計算したスコアを、回答の「最後のトークン」の位置にセットする
+            # （強化学習では、一連の行動が終わった最後に報酬を与えるのが一般的なため）
             reward_tensor[i, valid_response_length - 1] = score
-            # all_scores.append(score)
 
+            # このデータセットのprint回数カウンターを初期化
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
 
+            # 上限（num_examine）に達していなければ、生成されたテキストをコンソールに出力してデバッグしやすくする
             if already_print_data_sources[data_source] < self.num_examine:
                 already_print_data_sources[data_source] += 1
                 print(sequences_str)
-                
+
+        # 最終的に、バッチ全員分の報酬が詰まったテンソル（行列）を返して終了！
         return reward_tensor
 
 
