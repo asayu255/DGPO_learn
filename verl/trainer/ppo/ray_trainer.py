@@ -748,14 +748,16 @@ class RayPPOTrainer(object):
                 metrics = {}
                 timing_raw = {}
 
+                # 辞書型のデータを DataProto（専用のデータ構造）に変換
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
+                # 同じ問題を n_agent 回（設定次第では複数回）繰り返して、異なる回答を生成させる準備
                 batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_agent, interleave=True)
 
-                # pop those keys for generation
+                # 生成に必要なキー（入力トークンなど）だけを gen_batch として抜き出す
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
 
                 ####################
-                # original code here
+                # original code here: without serach
 
                 with _timer('step', timing_raw):
                     if not self.config.do_search:
@@ -771,29 +773,30 @@ class RayPPOTrainer(object):
                 # Below is aLL about agents - the "LLM + forloop"
                 ####################
                 # with _timer('step', timing_raw):
+                # 検索機能を使う場合（do_search == True のルート）
                     else:
+                        # 問題文の最初の入力IDを準備
                         first_input_ids = gen_batch.batch['input_ids'][:, -gen_config.max_start_length:].clone().long()
 
+                        # 「生成 → 検索 → 検索結果をプロンプトに追記 → さらに生成」というループを実行！
                         with _timer('gen', timing_raw):
-                            generation_manager.timing_raw = timing_raw
                             final_gen_batch_output = generation_manager.run_llm_loop(
                                 gen_batch=gen_batch,
                                 initial_input_ids=first_input_ids,
                             )
 
-                        # final_gen_batch_output.batch.apply(lambda x: x.long(), inplace=True)
+                        # PyTorchの型（long）を揃える
                         for key in final_gen_batch_output.batch.keys():
                             final_gen_batch_output.batch[key] = final_gen_batch_output.batch[key].long()
 
+                        # 生成された一連のテキストに対する確率（log_prob）を計算
+                        # （※本来の生成時に計算すべきだが、検索を挟む特殊な生成ループなので事後計算している）
                         with torch.no_grad():
                             output = self.actor_rollout_wg.compute_log_prob(final_gen_batch_output)
                             final_gen_batch_output = final_gen_batch_output.union(output)
 
-                        # batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
-                        #                                         dtype=object)
+                        # 生成されたデータをもとの batch に合流させる
                         batch.non_tensor_batch['uid'] = batch.non_tensor_batch['index'].copy()
-                                            
-                        # repeat to align with repeated responses in rollout
                         batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                         batch = batch.union(final_gen_batch_output)
 
@@ -803,21 +806,25 @@ class RayPPOTrainer(object):
                     # balance the number of valid tokens on each dp rank.
                     # Note that this breaks the order of data inside the batch.
                     # Please take care when you implement group based adv computation such as GRPO and rloo
+                    # 分散学習環境（FSDP/Megatron）で、各GPUの処理データ量が偏らないようにバランスをとる
                     self._balance_batch(batch, metrics=metrics)
 
                     # compute global_valid tokens
                     batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
 
-                    # batch.batch.apply(lambda x, key: x.long() if key != "old_log_probs" else x, inplace=True, key=True)
-                    for key in batch.batch.keys():
-                        if key != 'old_log_probs':
-                            batch.batch[key] = batch.batch[key].long()
-
+                    # 手本（Reference Policy）の評価
                     if self.use_reference_policy:
-                        # compute reference log_prob
                         with _timer('ref', timing_raw):
+                            # 手本である先輩モデル（3B）ならこの回答をどう出力したか（確率）を計算
                             ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
                             batch = batch.union(ref_log_prob)
+
+                    # 価値（Critic）の評価
+                    if self.use_critic:
+                        with _timer('values', timing_raw):
+                            # Criticモデルが「この回答は最終的に何点もらえそうか」を予想する
+                            values = self.critic_wg.compute_values(batch)
+                            batch = batch.union(values)
 
                     # compute values
                     if self.use_critic:
