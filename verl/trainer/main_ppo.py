@@ -32,18 +32,23 @@ def _select_rm_score_fn(data_source):
 class RewardManager():
     """The reward manager.
     """
-
+    #初期化とプロパティ
     def __init__(self, tokenizer, num_examine, format_score=0.) -> None:
+        # トークナイザー（数値をテキストに戻すための辞書）
         self.tokenizer = tokenizer
+        # コンソールにデバッグ表示（print）するデータ件数の上限
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
+        # 形式に関するデフォルトのスコア（フォーマットが正しいだけで与える点数など）
         self.format_score = format_score
 
-        self.search_count_lst = []
-        self.search_presence_lst = []
-        self.info_contains_answer_lst = []
+        # 以下は、WandBなどのログに記録するための統計データを貯める空のリスト
+        self.search_count_lst = []         # 検索を行った回数
+        self.search_presence_lst = []      # 検索を1回でも行ったか（0 or 1）
+        self.info_contains_answer_lst = [] # 検索結果の中に「正解」が含まれていたか（0 or 1）
 
     @property
     def extra_metrics(self):
+        # 上記で貯めたリストを辞書形式で返すプロパティ。学習フレームワークがログを取るために呼び出します。
         return {
             "search_count": self.search_count_lst,
             "search_present": self.search_presence_lst,
@@ -57,55 +62,70 @@ class RewardManager():
         if 'rm_scores' in data.batch.keys():
             return data.batch['rm_scores']
 
+        # 報酬を格納するための空のテンソル（行列）を作成。
+        # サイズはモデルの出力（responses）と同じで、初期値はすべて 0.0。
         reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
 
         # all_scores = []
 
+        # どのデータセット（nq, triviaqaなど）を何回printしたかを記録する辞書
         already_print_data_sources = {}
 
         for i in range(len(data)):
             data_item = data[i]  # DataProtoItem
 
-            prompt_ids = data_item.batch['prompts']
+            prompt_ids = data_item.batch['prompts'] # 問題文のトークンID（数値の配列）を取得
+            prompt_length = prompt_ids.shape[-1]    # 問題文の最大長を取得
 
-            prompt_length = prompt_ids.shape[-1]
-
+            # attention_mask（有効な文字が1、パディングが0の配列）を使って、本当の文字数を計算
             valid_prompt_length = data_item.batch['attention_mask'][:prompt_length].sum()
+            # パディングを除外した、純粋な問題文のトークンIDだけを切り出す
             valid_prompt_ids = prompt_ids[-valid_prompt_length:]
 
-            response_ids = data_item.batch['responses']
+            response_ids = data_item.batch['responses'] # 回答のトークンIDを取得
+            # 回答部分の本当の文字数を計算
             valid_response_length = data_item.batch['attention_mask'][prompt_length:].sum()
+            # パディングを除外した、純粋な回答のトークンIDだけを切り出す
             valid_response_ids = response_ids[:valid_response_length]
 
-            # decode
+            # 問題文と回答のトークンIDを連結する
             sequences = torch.cat((valid_prompt_ids, valid_response_ids))
+            # トークナイザーを使って、数値の配列を人間が読める文字列（テキスト）に戻す
             sequences_str = self.tokenizer.decode(sequences)
 
+            # メタデータから、この問題の「本当の正解（Ground Truth）」を取得
             ground_truth = data_item.non_tensor_batch['reward_model']['ground_truth']
 
-            # select rm_score
+            # データセット名（nq, triviaqaなど）を取得
             data_source = data_item.non_tensor_batch['data_source']
+            # データセットに応じた採点関数（完全一致を見る qa_em など）を選択
             compute_score_fn = _select_rm_score_fn(data_source)
 
+            # 採点関数を実行し、スコア（報酬値）を算出
             score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, format_score=self.format_score)
 
-
-            solution_str = sequences_str
-            targets = ground_truth.get('target', [])
+            solution_str = sequences_str # 変数名を見やすくするために代入
+            targets = ground_truth.get('target', []) # 正解の文字列リストを取得
+            
+            # 正解が単一の文字列だった場合、リスト形式に変換する（後の処理でエラーにならないように）
             if isinstance(targets, str):
                 targets = [targets]
 
+            # テキスト内に "<search>" というタグが何回出現したかカウントする
+            # （-1している理由は、プロンプトの初期指示文などにデフォルトで1つ含まれているためだと思われます）
             search_count = solution_str.count('<search>')-1
-            self.search_count_lst.append(search_count)
-            self.search_presence_lst.append(1 if search_count > 0 else 0)
+            self.search_count_lst.append(search_count) # ログ用リストに追加
+            self.search_presence_lst.append(1 if search_count > 0 else 0) # 1回以上検索したら 1、そうでなければ 0
 
             found = 0
+            # 正規表現を使って、"<information>内容</information>" に囲まれた検索結果テキストをすべて抽出する
             for match in re.finditer(r'<information[^>]*>(.*?)</information>', solution_str, flags=re.DOTALL | re.IGNORECASE):
-                text = match.group(1)
+                text = match.group(1) # タグの中身（抽出された検索結果）
+                # 検索結果テキストの中に、正解（targets）が含まれているかチェック
                 if any(t.strip() and t in text for t in targets):
-                    found = 1
+                    found = 1 # 見つかったらフラグを1にする
                     break
-            self.info_contains_answer_lst.append(found)
+            self.info_contains_answer_lst.append(found) # ログ用リストに追加
 
 
             reward_tensor[i, valid_response_length - 1] = score
