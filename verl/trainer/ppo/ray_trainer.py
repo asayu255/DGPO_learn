@@ -825,13 +825,8 @@ class RayPPOTrainer(object):
                             # Criticモデルが「この回答は最終的に何点もらえそうか」を予想する
                             values = self.critic_wg.compute_values(batch)
                             batch = batch.union(values)
-
-                    # compute values
-                    if self.use_critic:
-                        with _timer('values', timing_raw):
-                            values = self.critic_wg.compute_values(batch)
-                            batch = batch.union(values)
-
+                            
+                    # --- 3. 報酬（Reward）の計算 ---
                     with _timer('adv', timing_raw):
                         # compute scores. Support both model and function-based.
                         # We first compute the scores using reward model. Then, we call reward_fn to combine
