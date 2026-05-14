@@ -163,14 +163,14 @@ class vLLMRollout(BaseRollout):
             idx_list.append(_pre_process_inputs(self.pad_token_id, idx[i]))
 
         do_sample = prompts.meta_info.get('do_sample', True)
-        if not do_sample: #サンプリングパラメータなかった時
+        if not do_sample: #サンプリングしない→もっとも良いものを決定論的に選ぶ
             kwargs = {
-                'best_of': 1,
-                'top_p': 1.0,
-                'top_k': -1,
-                'min_p': 0.0,
-                'temperature': 0,
-                'n': 1  # if greedy, only 1 response
+                'best_of': 1, #候補は1つだけ
+                'top_p': 1.0, #全ての中から
+                'top_k': -1, #全ての中から
+                'min_p': 0.0, #低確率トークンのしきい値なし
+                'temperature': 0, #logitsは最後にsoftmax関数にかけられる→温度0はほぼargmax
+                'n': 1  # if greedy, only 1 response 最終的なレスポンス数1
             }
 
         # users can customize different sampling_params at different run
