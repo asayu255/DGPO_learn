@@ -88,20 +88,21 @@ class vLLMRollout(BaseRollout):
 
         assert model_hf_config.max_position_embeddings >= config.prompt_length + config.response_length, \
             "model context length should be greater than total sequence length"
-        self.inference_engine = LLM(actor_module,
+        self.inference_engine = LLM(actor_module, #現在の actor model
                                     tokenizer=tokenizer,
-                                    model_hf_config=model_hf_config,
-                                    tensor_parallel_size=tensor_parallel_size,
-                                    dtype=config.dtype,
+                                    model_hf_config=model_hf_config, #Hugging Face model config
+                                    tensor_parallel_size=tensor_parallel_size, #vLLM 推論時の tensor parallel 数
+                                    dtype=config.dtype, #推論 dtype
                                     enforce_eager=config.enforce_eager,
                                     gpu_memory_utilization=config.gpu_memory_utilization,
                                     skip_tokenizer_init=False,
-                                    max_model_len=config.prompt_length + config.response_length,
-                                    load_format=config.load_format)
+                                    max_model_len=config.prompt_length + config.response_length, #prompt + response の最大長
+                                    load_format=config.load_format) #vLLM への重み読み込み形式
 
         # Offload vllm model to reduce peak memory usage
         self.inference_engine.offload_model_weights()
 
+        #vLLM の SamplingParams
         kwargs = dict(
             n=1,
             logprobs=1,  # can be set to 0 and let actor to recompute
@@ -113,6 +114,7 @@ class vLLMRollout(BaseRollout):
             kwargs['detokenize'] = False
 
         # supporting adding any sampling params from the config file
+        #config にある temperature、top_p、top_k などが SamplingParams に渡されます。つまり、生成分布を決める sampling 設定はここで vLLM に渡されます
         for k in config.keys():
             if hasattr(SamplingParams(), str(k)):
                 kwargs[k] = config.get(k)
@@ -137,8 +139,9 @@ class vLLMRollout(BaseRollout):
         # if len(old_sampling_params_args):
         for key, value in old_sampling_params_args.items():
             setattr(self.sampling_params, key, value)
-
-    @torch.no_grad()
+            
+    #実際にrolloutを生成する関数
+    @torch.no_grad() #backwardなし
     def generate_sequences(self, prompts: DataProto, **kwargs) -> DataProto:
         # rebuild vllm cache engine
         if self.config.free_cache_engine:
@@ -160,7 +163,7 @@ class vLLMRollout(BaseRollout):
             idx_list.append(_pre_process_inputs(self.pad_token_id, idx[i]))
 
         do_sample = prompts.meta_info.get('do_sample', True)
-        if not do_sample:
+        if not do_sample: #サンプリングパラメータなかった時
             kwargs = {
                 'best_of': 1,
                 'top_p': 1.0,
@@ -172,7 +175,7 @@ class vLLMRollout(BaseRollout):
 
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**kwargs):
-            output = self.inference_engine.generate(
+            output = self.inference_engine.generate( #vllm generateを呼ぶ prompt token id から response token ids
                 prompts=None,  # because we have already convert it to prompt token id
                 sampling_params=self.sampling_params,
                 prompt_token_ids=idx_list,
@@ -180,6 +183,7 @@ class vLLMRollout(BaseRollout):
 
         # TODO(sgm): disable logprob when recompute_log_prob is enable
         # if n = 1: (bs, response_length) ; if n > 1: (bs * n, response_length)
+        # vllmの出力
         response = output[0].to(idx.device)
         log_probs = output[1].to(idx.device)
 
@@ -208,18 +212,19 @@ class vLLMRollout(BaseRollout):
         attention_mask = torch.cat((attention_mask, response_attention_mask), dim=-1)
 
         # all the tp ranks should contain the same data here. data in all ranks are valid
+        # vllmの最終的な出力
         batch = TensorDict(
             {
                 'prompts': idx,
                 'responses': response,
-                'input_ids': seq,  # here input_ids become the whole sentences
+                'input_ids': seq,  # here input_ids become the whole sentences = prompt + response
                 # 'old_log_probs': log_probs, # we will recompute old log prob with actor
                 'attention_mask': attention_mask,
                 'position_ids': position_ids
             },
             batch_size=batch_size)
 
-        # free vllm cache engine
+        # free vllm cache engine KVキャッシュ解放
         if self.config.free_cache_engine:
             self.inference_engine.free_cache_engine()
 
