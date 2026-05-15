@@ -8,10 +8,10 @@ authors = [
   { name = "Rikuto Kotoge", email = "rikuto88@sanken.osaka-u.ac.jp" },
   { name = "Mai Nishimura", email = "mai.nishimura@sinicx.com" },
 ]
-#通常の Python package としては直接依存を持たせず、後述する pixi の environment / dependency group 側で依存を管理
+# 通常の Python package としては直接依存を持たせず、後述する pixi の environment / dependency group 側で依存を管理
 dependencies = []
 
-#テストや整形用に追加で入れたい依存
+# テストや整形用に追加で入れたい依存
 [project.optional-dependencies]
 test = ["pytest", "yapf"]
 
@@ -34,30 +34,30 @@ retriever = [
   "uvicorn>=0.40.0,<0.41",
 ]
 
-#build環境
+# build 環境
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
-#conda / pypi環境
+# conda / pypi 環境
 [tool.pixi.workspace]
-#conda-forge から package を解決
+# conda-forge から package を解決
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 
 [tool.pixi.pypi-dependencies]
 
-#agent 環境では CUDA 関連 package を使うため、NVIDIA channel を追加
+# agent 環境では CUDA 関連 package を使うため、NVIDIA channel を追加
 [tool.pixi.feature.agent]
 channels = ["nvidia/label/cuda-12.1.1", "nvidia", "conda-forge"]
 
-# pypi-based environments for LLM training
+# pypi-based environments for LLM training / inference
 [tool.pixi.feature.agent.dependencies]
 python = "3.9.*"
 setuptools = ">=80.9.0,<81"
 cuda = "==12.1.1"
 
-#現在の環境の torch / CUDA を使って flash-attn をビルドする
+# 現在の環境の torch / CUDA を使って flash-attn をビルドする
 [tool.pixi.feature.agent.pypi-options]
 no-build-isolation = ["flash-attn"]
 
@@ -77,11 +77,11 @@ torchaudio = "==2.4.0"
 pytorch-cuda = "12.1.*"
 faiss-gpu = "==1.8.0"
 
-#TOML formatter / linter
+# TOML formatter / linter
 [tool.pixi.feature.lint.dependencies]
 tombi = "*"
 
-#コマンド定義
+# コマンド定義
 [tool.pixi.tasks]
 format-toml = { cmd = "tombi format", default-environment = "lint", description = "Format TOML files with tombi" }
 # To get omron-sinicx/{model_name}, generate "Read" token via https://huggingface.co/settings/tokens
@@ -94,6 +94,8 @@ train = { cmd = [
   "./scripts/train_dgpo.sh",
   "--data-name",
   "{{ data_name }}",
+  "--gpu-ids",
+  "{{ gpu_ids }}",
   "--student-model",
   "{{ student_model }}",
   "--teacher-model",
@@ -102,6 +104,7 @@ train = { cmd = [
   "{{ experiment_name }}",
 ], default-environment = "agent", description = "Train model w/ DGPO", args = [
   { "arg" = "data_name", "default" = "nq_hotpotqa_train" },
+  { "arg" = "gpu_ids", "default" = "0,1,2,3,4,5,6,7" },
   { "arg" = "student_model", "default" = "omron-sinicx/Qwen2.5-0.5B-Instruct-kd" },
   { "arg" = "teacher_model", "default" = "omron-sinicx/SearchR1-ppo-qwen2.5-3b-instruct" },
   { "arg" = "experiment_name", "default" = "dgpo-qwen2.5-0.5b" },
@@ -110,12 +113,15 @@ test = { cmd = [
   "./scripts/test_dgpo.sh",
   "--data-name",
   "{{ data_name }}",
+  "--gpu-ids",
+  "{{ gpu_ids }}",
   "--model",
   "{{ model }}",
   "--experiment-name",
   "{{ experiment_name }}",
-], args = [
+], default-environment = "agent", description = "Test pretrained models", args = [
   { "arg" = "data_name", "default" = "nq_hotpotqa_train" },
+  { "arg" = "gpu_ids", "default" = "0,1,2,3,4,5,6,7" },
   { "arg" = "model", "default" = "omron-sinicx/DGPO-qwen2.5-0.5b" },
   { "arg" = "experiment_name", "default" = "dgpo-test" },
 ] }
@@ -141,18 +147,18 @@ download = { depends-on = [
   { task = "download-dataset", environment = "agent" },
 ], description = "Download corpus and dataset" }
 
-#環境変数
+# 環境変数
 [tool.pixi.activation.env]
 RETRIEVER_DATA_PATH = "$PIXI_PROJECT_ROOT/retriever_root"
 EXP_ROOT = "$PIXI_PROJECT_ROOT/exp_root"
 DATA_ROOT = "$PIXI_PROJECT_ROOT/data"
 
-#pixi の environment 定義
+# pixi の environment 定義
 [tool.pixi.environments]
 agent = ["agent"]
 retriever = ["retriever"]
 lint = ["lint"]
 
-#この package に含める Python module
+# この package に含める Python module
 [tool.setuptools.packages.find]
 include = ["search_r1*", "verl*"]
